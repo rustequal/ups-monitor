@@ -38,7 +38,7 @@ jobs:
   version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The manifest is the source of truth and the tag is checked against it,
       # not the other way round: `build.rs` reads the manifest, so that is what
       # ends up inside the executable.
