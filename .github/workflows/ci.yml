@@ -1,0 +1,1023 @@
+# The verification matrix, as a file in the tree rather than as prose.
+#
+# It existed only as a written list before, naming the commands a person was
+# expected to run before delivering. That answers "did it pass when somebody
+# remembered to look", which is not the same question as "does it pass now" —
+# and six months on nobody can tell the two apart. Every command below is
+# one that was already being run by hand; nothing new is checked here, it is
+# just checked by something that cannot forget.
+#
+# The zero-warning rule is enforced by `[lints]` in Cargo.toml, so `cargo check`
+# failing on an unused import needs no flag here. `-D warnings` is still passed
+# to clippy, because clippy's own lints are not covered by that section.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The real target, on the real operating system: MSVC, and tests that run as
+  # Windows processes rather than under an emulation layer.
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.82 is the MSRV declared in Cargo.toml; beta and nightly are here to
+        # see a new lint arriving before it arrives in a release.
+        rust: [1.82, stable, beta, nightly]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          rustup toolchain install ${{ matrix.rust }} --profile minimal --component clippy
+          rustup default ${{ matrix.rust }}
+      - name: check
+        run: cargo check --target x86_64-pc-windows-msvc
+      - name: check --tests
+        run: cargo check --target x86_64-pc-windows-msvc --tests
+      # `pedantic` is enabled at `warn` in Cargo.toml and is deliberately *not*
+      # part of the gate.
+      #
+      # The alternative was to turn it on at `deny` with a list of allowed
+      # exceptions, and that list is the problem: an `allow` entry makes a
+      # warning stop appearing without making the code any better, and a build
+      # that is green because of it is green about the wrong thing. Whatever
+      # cannot honestly be fixed stays on the screen instead, where it can be
+      # argued with.
+      #
+      # So the gate below denies everything except `pedantic`, and the census
+      # after it prints what `pedantic` still has to say without failing the
+      # job. The count is the number to watch: it goes down when code is fixed,
+      # and nothing else can move it.
+      - name: clippy
+        run: cargo clippy --target x86_64-pc-windows-msvc -- -D warnings -A clippy::pedantic -A clippy::indexing_slicing
+      - name: clippy --tests
+        run: cargo clippy --target x86_64-pc-windows-msvc --tests -- -D warnings -A clippy::pedantic -A clippy::indexing_slicing
+      - name: pedantic census
+        run: cargo clippy --target x86_64-pc-windows-msvc --all-targets
+      # The one thing only a Windows host can do: run the tests as native
+      # processes. Locally they go through wine, which is close enough to
+      # develop against and not close enough to be the last word.
+      - name: test
+        run: cargo test --target x86_64-pc-windows-msvc
+      # Dead code is deleted in this project, never annotated, so this is
+      # expected to stay silent. It is run anyway because the day it stops
+      # being silent is the day it is worth knowing about.
+      - name: forced dead_code and unused
+        env:
+          RUSTFLAGS: -W dead_code -W unused
+        run: cargo check --target x86_64-pc-windows-msvc --tests
+
+  # Coverage, and why it is a Windows job.
+  #
+  # `-C instrument-coverage` needs `profiler_builtins`, and the Rust
+  # distribution does not ship it for `x86_64-pc-windows-gnu`. That is not a
+  # missing switch: the cross job below cannot produce this figure at all, and
+  # a coverage run under wine was tried and stops there. On `windows-latest`
+  # with the MSVC target it is a supported configuration and the tests run as
+  # native processes, which is the same reason the matrix above exists.
+  #
+  # Its own job rather than a fifth entry in that matrix: coverage is a
+  # property of the test suite, not of the compiler version, so measuring it
+  # four times would produce one number and three copies of it.
+  #
+  # The figure is reported, not gated. A threshold is a number that gets
+  # lowered when it is inconvenient, and this project already has one ratchet
+  # whose only enforcement was a step that never ran. What is worth watching is
+  # which files sit at the bottom of the list, and that is what the summary
+  # prints.
+  #
+  # Line and region coverage, not branch. `--branch` passes
+  # `-Z coverage-options=branch`, which stable `rustc` refuses outright — the
+  # first run of this job died on `proc-macro2`'s build script before reaching
+  # any code of this project's. The flag was written here from the tool's help
+  # text rather than from a run, which is the same mistake as a metric nobody
+  # measured; it is recorded here rather than quietly deleted.
+  coverage:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component llvm-tools-preview
+          rustup default stable
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked --version 0.9.0
+      - name: coverage
+        run: |
+          cargo llvm-cov --target x86_64-pc-windows-msvc --all-targets
+
+  # The GNU toolchain is how the shipped binary is linked, and it is
+  # cross-compiled from Linux. This is also where the checks that do not depend
+  # on a Windows host live, so they are not repeated four times above.
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup target add x86_64-pc-windows-gnu
+          rustup toolchain install 1.82 --profile minimal --component clippy \
+            --target x86_64-pc-windows-gnu
+      - name: Install mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: fmt
+        run: cargo fmt --check
+      # The layout does not know what platform it is drawing on.
+      #
+      # The fifth audit proposed a `src/win/` directory as the single place
+      # allowed to say `use windows::`, with a CI step to enforce it. That was
+      # closed as not worth doing — a wrapper around a call made once is a
+      # rename, not an encapsulation, and the reasoning is in `ui/gdi.rs` — but
+      # the half of it that *was* worth having is this list.
+      #
+      # These modules compute where things go, what they say and what colour
+      # they are. None of them names a Win32 type today, and the migration to
+      # this program's own `Rect` is what made that true: they used to carry
+      # `RECT` and lost `Eq` when a minor release of a binding crate stopped
+      # deriving it. A file appearing here again is that class of coupling
+      # coming back, and it comes back one `use` at a time — which is why this
+      # is checked rather than remembered.
+      - name: domain modules stay platform-free
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+
+          domain = [
+              "src/color.rs",
+              "src/config.rs",
+              "src/icon.rs",
+              "src/notify.rs",
+              "src/warning.rs",
+              "src/ui/focus.rs",
+              "src/ui/format.rs",
+              "src/ui/layout.rs",
+              "src/ui/panel.rs",
+              "src/ui/row.rs",
+              "src/ui/settings.rs",
+              "src/ui/textfield.rs",
+              "src/ui/theme.rs",
+          ]
+
+          bad = 0
+          for name in domain:
+              path = pathlib.Path(name)
+              if not path.exists():
+                  print(f"{name}: listed here but no longer in the tree")
+                  bad = 1
+                  continue
+              for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  if line.lstrip().startswith("//"):
+                      continue
+                  if "use windows::" in line or "windows::Win32" in line:
+                      print(f"{name}:{n}: domain module reaching for the platform")
+                      bad = 1
+          sys.exit(bad)
+          PY
+      # The part of the source `rustfmt` does not reach.
+      #
+      # `rustfmt` reflows code, never comments and never the inside of a string
+      # literal — and when a literal makes a line exceed `max_width` it gives up
+      # on the whole expression and leaves it as it found it, silently, with
+      # `cargo fmt --check` still passing. That is how a scripted edit left a
+      # sentence with twenty-four spaces inside it and two unformatted calls
+      # around it, through four audits: every check in the matrix was blind to
+      # them by construction.
+      #
+      # 100 columns is not a new number — it is `rustfmt`'s own `max_width`,
+      # applied to the lines it declines to apply it to. The second rule is the
+      # project's: comments are English, so a Cyrillic or CJK character in one
+      # is a translation that was never made. Neither rule can be satisfied by a
+      # tool, so both are checked here rather than trusted to a reader.
+      #
+      # The third rule was added after the fifth audit found six doc blocks
+      # written out twice in a row — 198 lines, all of them in files a scripted
+      # split had touched. A duplicating edit is invisible to every other check
+      # by construction: the code still compiles, `cargo fmt --check` still
+      # passes, and a line-multiset comparison of before and after — the check
+      # that catches a scripted edit *losing* text — reports nothing, because
+      # nothing was lost.
+      #
+      # The fourth counts `#[allow]` attributes. The rule it guards is old: no
+      # warning in this project is suppressed. The check is new because the way
+      # it had been stated, a substring search, also matched a doc comment that
+      # tells the history of a field which once carried the attribute — it
+      # reported a violation against correct code, and "fixing" that would have
+      # deleted a useful comment. It is the same line filter the first two rules
+      # already use, which is the whole of the change.
+      - name: comment hygiene
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          foreign = re.compile(r'[\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]')
+          bad = 0
+
+          def doc_blocks(lines):
+              """Runs of consecutive `///` or `//!` lines, with their body text."""
+              i = 0
+              while i < len(lines):
+                  head = re.match(r'\s*(///|//!)($| )', lines[i])
+                  if not head:
+                      i += 1
+                      continue
+                  marker = head.group(1)
+                  start, body = i, []
+                  while i < len(lines) and re.match(rf'\s*{marker}($| )', lines[i]):
+                      body.append(re.sub(rf'^\s*{marker} ?', '', lines[i]))
+                      i += 1
+                  yield start + 1, body
+
+          for path in sorted(pathlib.Path('src').rglob('*.rs')):
+              lines = path.read_text(encoding='utf-8').splitlines()
+              for n, line in enumerate(lines, 1):
+                  if not line.lstrip().startswith('//'):
+                      if '#[allow' in line:
+                          print(f'{path}:{n}: warning suppressed with #[allow]')
+                          bad = 1
+                      continue
+                  if len(line) > 100:
+                      print(f'{path}:{n}: comment runs to {len(line)} columns')
+                      bad = 1
+                  if foreign.search(line):
+                      print(f'{path}:{n}: comment is not in English')
+                      bad = 1
+              for n, body in doc_blocks(lines):
+                  half, rest = divmod(len(body), 2)
+                  if half >= 2 and rest == 0 and body[:half] == body[half:]:
+                      print(f'{path}:{n}: doc block is its own text written twice')
+                      bad = 1
+          sys.exit(bad)
+          PY
+      # Names the source claims about itself.
+      #
+      # Five findings of the sixth audit were one defect wearing five faces: a
+      # comment naming a function that no longer exists. `App::event_enabled`,
+      # `App::describe`, `request_self_test`, `draw_runs`, `font_size` — each
+      # was written when it was true and outlived its subject, and every check
+      # in the matrix was blind to all five, because a comment is not code.
+      # The fifth audit found the same class twice; a class that recurs across
+      # audits is a class that needs a check rather than another reading.
+      #
+      # The cost of the defect is what makes it worth a step of its own: a
+      # reader cannot tell a stale comment from a wrong one without going and
+      # looking, so one false name discredits the paragraph around it — and the
+      # paragraphs here are where the reasoning lives.
+      #
+      # Rule 1: a backticked name shaped like an identifier of this project —
+      # lower-case `snake_case` with an underscore, or a path with `::` —
+      # appears somewhere in a non-comment line of the tree. Shape is what
+      # keeps the rule cheap: `WM_PAINT` and `HIDP_STATUS_USAGE_NOT_FOUND` are
+      # named in comments and often never called, and screening them out by
+      # case costs nothing, because a platform constant that *is* used is
+      # checked by the compiler already.
+      #
+      # Rule 2: `# Safety` stands over an `unsafe fn` and nowhere else. In Rust
+      # that heading means one thing — calling this can corrupt memory, here
+      # are the conditions — so on a safe function it tells the reader either
+      # that `unsafe` was forgotten or that the author does not know what the
+      # heading is for. Seventeen of them had accumulated on the drawing
+      # routines, left behind when `Canvas` replaced `dc: HDC` and made them
+      # safe. `clippy::unnecessary_safety_doc` does not reach them: it looks at
+      # exported items, and all seventeen were private or `pub(super)`.
+      #
+      # Rule 3 is the same defect one level down, and it was found by auditing
+      # the fix for rule 2 rather than by reading: two `// SAFETY: as above.`
+      # comments stood over calls to `stroke_frame`, which `Canvas` had made a
+      # safe function. A justification over safe code is misleading in exactly
+      # the way the heading is — it says there is something here that can go
+      # wrong, and there is not. So a `SAFETY:` line stands over an `unsafe`
+      # block or an `unsafe impl`, and nowhere else.
+      #
+      # The exclusions below are the point of the rule, not a hole in it. Each
+      # is a name that deliberately does not exist: a foreign API named for
+      # comparison, a lint, or an entity this project removed and still
+      # explains. Adding a line here is the author saying "yes, that name is
+      # gone on purpose" — which is exactly the statement that was missing in
+      # all five findings above.
+      - name: names the comments claim
+        run: |
+          python3 - <<'PY'
+          import collections, pathlib, re, sys
+
+          # Names that are meant to have no definition in this tree.
+          ABSENT = {
+              # Foreign APIs, named to say what this code replaced or is unlike.
+              'egui::Color32':      'the type color.rs replaced when the UI stopped being egui',
+              'text_input':         "iced's field widget, named beside egui's in textfield.rs",
+              'FromStr::from_str':  'the std trait method `Config::from_ini` deliberately is not',
+              'from_str':           'same, unqualified, in the sentence that contrasts the two',
+              'core::mem::transmute': 'what the windows crate does inside HidP_SetUsages',
+              # Lints, named where the code explains why one does or does not fire.
+              'dead_code':          'the rustc lint, discussed in build.rs',
+              'clippy::manual_div_ceil': 'the lint testsupport.rs avoids by using div_ceil',
+              'len_without_is_empty': 'the lint TextField satisfies by having both methods',
+              'too_many_arguments': 'the suppression poller.rs removed by introducing Control',
+              # Entities this project removed, in the paragraphs that say so.
+              'panel_win32':        'the ui/ subdirectory flattened away, explained in ui/mod.rs',
+              'layout::Palette':    'the copy of Theme deleted when Theme became Copy',
+              'to_wide':            'the three divergent helpers wide.rs replaced',
+              'wake_loop':          'the duplicate of wake_ui that was deleted with it',
+              'opt_flag':           'the bool-flattening reader replaced by opt_flag_checked',
+              'ac_present_known':   'the companion field Option<bool> made unnecessary',
+              'is_feature':         'the always-true parameter deleted from read_value',
+              'reading_dirty':      'the flag redraw_panel briefly consumed and no longer does',
+              'digits_only':        'the bool a Filter enum replaced in textfield.rs',
+              'Row::Button':        'renamed to Row::Buttons when its name shadowed the enum',
+              'clear_log':          'named to say the log warning has no clearing half',
+              'every_exit_path_tears_down': 'a test never written, named where that is explained',
+          }
+
+          SOURCES = sorted(pathlib.Path('src').rglob('*.rs')) + [pathlib.Path('build.rs')]
+          BACKTICKED = re.compile(r'`([^`\n]+)`')
+          IDENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+          TOKEN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+          UNSAFE_FN = re.compile(
+              r'^\s*(?:pub(?:\([^)]*\))?\s+)?unsafe\s+(?:extern\s+"[^"]*"\s+)?fn\b'
+          )
+          SAFETY = re.compile(r'//\s*SAFETY:')
+          GUARDED = re.compile(r'\bunsafe\s*(\{|impl\b)')
+          # Rule 4: `self.x` and friends outside backticks in a comment.
+          #
+          # Introducing a context type means renaming its values at every use,
+          # and a rename by pattern does not know a comment from an expression.
+          # Extracting `Frame` out of `paint` left seventeen sentences reading
+          # "one text self.line", "nothing to self.line up with", "share one
+          # self.width" — prose with a field access spliced into the middle of
+          # it. Nothing else catches this: it compiles, the tests pass, clippy
+          # is silent, and rule 1 skips it because `self.line` is neither an
+          # identifier nor a path.
+          #
+          # Inside backticks the same text is a legitimate reference to a
+          # field, so only the prose between them is checked.
+          RECEIVER = re.compile(r'\b(self|acc|frame|session)\.[a-z_]+')
+
+          def is_comment(line):
+              return line.lstrip().startswith('//')
+
+          # Every token the tree actually spells outside a comment.
+          spelled = set()
+          for path in SOURCES:
+              for line in path.read_text(encoding='utf-8').splitlines():
+                  if not is_comment(line):
+                      spelled.update(TOKEN.findall(line))
+
+          bad = 0
+          used_exclusions = set()
+
+          for path in SOURCES:
+              lines = path.read_text(encoding='utf-8').splitlines()
+              for n, line in enumerate(lines, 1):
+                  # Rule 2, checked where the heading is written.
+                  if line.strip() == '/// # Safety':
+                      j = n - 1
+                      while j < len(lines) and (
+                          lines[j].lstrip().startswith('///')
+                          or lines[j].lstrip().startswith('#[')
+                      ):
+                          j += 1
+                      item = lines[j] if j < len(lines) else ''
+                      if not UNSAFE_FN.match(item):
+                          print(f'{path}:{n}: # Safety over a function that is not unsafe')
+                          bad = 1
+                  # Rule 1.
+                  if not is_comment(line):
+                      continue
+                  # Rule 4: a receiver spliced into prose.
+                  for segment in line.split('`')[::2]:
+                      hit = RECEIVER.search(segment)
+                      if hit:
+                          print(f'{path}:{n}: `{hit.group(0)}` reads as prose, not as code')
+                          bad = 1
+                  # Rule 3: what the justification stands over.
+                  if SAFETY.search(line):
+                      j = n
+                      while j < len(lines) and is_comment(lines[j]):
+                          j += 1
+                      subject = lines[j] if j < len(lines) else ''
+                      if not GUARDED.search(subject):
+                          print(f'{path}:{n}: SAFETY: over code that is not unsafe')
+                          bad = 1
+                  for quoted in BACKTICKED.findall(line):
+                      name = quoted.strip()
+                      name = re.sub(r'^\[|\]$', '', name)
+                      name = re.sub(r'\(.*\)$', '', name).strip()
+                      if '::' in name:
+                          parts = [p for p in name.split('::') if p]
+                      elif IDENT.match(name) and '_' in name and name.islower():
+                          parts = [name]
+                      else:
+                          continue
+                      if not all(IDENT.match(p) for p in parts):
+                          continue
+                      if name in ABSENT:
+                          used_exclusions.add(name)
+                          continue
+                      for part in parts:
+                          if part not in spelled:
+                              print(f'{path}:{n}: `{name}` is not spelled anywhere in the tree')
+                              bad = 1
+                              break
+
+          # An exclusion nobody needs is a claim nobody checks.
+          for name in sorted(set(ABSENT) - used_exclusions):
+              print(f'ABSENT lists `{name}`, but no comment mentions it any more')
+              bad = 1
+
+          sys.exit(bad)
+          PY
+      # One grouping for `use`, everywhere.
+      #
+      # There were four. One group with everything sorted together
+      # (`poller.rs`, `config.rs`); three groups std/windows/local
+      # (`hid/selftest.rs`); two groups local/windows (`window/proc.rs`); and
+      # `ui/text.rs`, which had `crate::ui::rect::Rect` in its first group and
+      # `crate::color::Color` in its third — two imports of the same kind in
+      # different groups of one file.
+      #
+      # The rule chosen is `std` / external / local, which is what
+      # `rustfmt`'s `group_imports = "StdExternalCrate"` produces. That option
+      # is unstable, and this project builds on 1.82 release, so the rule is
+      # kept by this step instead of by the formatter. Ordering *within* a
+      # group is already `rustfmt`'s job and is not re-checked here.
+      #
+      # The reordering pulled three comments off the imports they described —
+      # all three had already drifted, and the sort only made it visible.
+      - name: imports are grouped std / external / local
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+          
+          USE = re.compile(r'^(pub(\(\w+\))? )?use ')
+          NAMES = ('std', 'external', 'local')
+          
+          def group_of(line):
+              root = re.search(r'\buse\s+([A-Za-z_][A-Za-z0-9_]*)', line).group(1)
+              if root in ('std', 'core', 'alloc'):
+                  return 0
+              if root in ('crate', 'super', 'self'):
+                  return 2
+              return 1
+          
+          bad = 0
+          for path in sorted(pathlib.Path('src').rglob('*.rs')):
+              lines = path.read_text(encoding='utf-8').split('\n')
+              seen, last, blanks, i = [], None, 0, 0
+              while i < len(lines):
+                  line = lines[i]
+                  if not line.strip():
+                      blanks += 1
+                      i += 1
+                      continue
+                  if line.startswith(('#[', '//')):
+                      i += 1
+                      continue
+                  if not USE.match(line):
+                      if last is not None:
+                          break
+                      i += 1
+                      continue
+                  g = group_of(line)
+                  if last is not None:
+                      if g != last and blanks == 0:
+                          print(f'{path}:{i+1}: {NAMES[g]} import follows {NAMES[last]} with no blank line')
+                          bad = 1
+                      if g != last and g in seen:
+                          print(f'{path}:{i+1}: {NAMES[g]} imports appear in more than one group')
+                          bad = 1
+                      if g < last:
+                          print(f'{path}:{i+1}: {NAMES[g]} group comes after {NAMES[last]}')
+                          bad = 1
+                  if last is None or g != last:
+                      seen.append(g)
+                  last, blanks = g, 0
+                  # A `use` item runs to its semicolon, which may be several lines down.
+                  while not lines[i].rstrip().endswith(';'):
+                      i += 1
+                  i += 1
+          sys.exit(bad)
+          PY
+      # A doc block belongs to the item below it.
+      #
+      # The seventh audit found ten places where it did not. A deleted or
+      # renamed item leaves its `///` block behind, the next item inherits it,
+      # and rustdoc renders it as that item's own — so `IconSlot` carried half
+      # of `WindowIcon`'s first sentence and `WindowIcon` carried the other
+      # half, `drain_commands` explained how `wait_until` parks, and
+      # `plan_emission`'s twenty-three lines stood over `device_is_gone`.
+      #
+      # Nothing else in the matrix can see it. The code compiles, the tests
+      # pass, `missing_docs` looks only at the public surface — which here is
+      # one function — and `names the comments claim` checks that a name exists
+      # somewhere in the tree, not that the paragraph around it is about the
+      # thing underneath it.
+      #
+      # Two rules, both about placement rather than prose:
+      #
+      # 1. At most one `///` run above one item. Two runs separated by nothing
+      #    but blank lines are both attributes of the item below them, which is
+      #    exactly the shape an orphaned block leaves.
+      # 2. Inside one run, a paragraph that ends and is followed straight away
+      #    by a new one, with no blank `///` between. A block welded onto
+      #    another reads as one run-on paragraph in rustdoc. A paragraph end is
+      #    recognised by a line that stops on a full stop well short of the
+      #    block's own wrap width; list items, headings, tables and link
+      #    definitions are excluded, because those legitimately sit one to a
+      #    line.
+      #
+      # Both rules were mutation-tested before this was committed, and
+      # separately, because the first version of the exercise triggered rule 2
+      # on every mutation and left rule 1 unproven. Six mutations: an orphan run
+      # above an item with a multi-line signature, above an item with `#[..]`
+      # between the doc and the item, and with several blank lines between the
+      # two runs; and a welded summary in each of the same three positions. All
+      # six are caught. The multi-line signature is checked deliberately — three
+      # separate CI steps in the sixth audit were blind to exactly that.
+      - name: doc blocks belong to the item below them
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          DOC = re.compile(r'^(\s*)///($| )')
+
+          def runs(lines):
+              """Yields (start_index, body_lines, end_index) for each `///` run."""
+              i = 0
+              while i < len(lines):
+                  m = DOC.match(lines[i])
+                  if not m:
+                      i += 1
+                      continue
+                  indent, start, body = m.group(1), i, []
+                  while (
+                      i < len(lines)
+                      and DOC.match(lines[i])
+                      and lines[i][: len(indent) + 3].strip() == '///'
+                  ):
+                      body.append(re.sub(r'^\s*/// ?', '', lines[i]).rstrip())
+                      i += 1
+                  yield start, body, i
+
+          def structural(line):
+              """A line that legitimately stands alone: list, heading, table, link."""
+              s = line.strip()
+              return (
+                  not s
+                  or s.startswith(('-', '*', '|', '#', '>', '```', '1.', '2.', '3.'))
+                  or re.match(r'^\[[^\]]+\]:', s) is not None
+              )
+
+          bad = 0
+          for path in sorted(pathlib.Path('src').rglob('*.rs')):
+              lines = path.read_text(encoding='utf-8').splitlines()
+              found = list(runs(lines))
+              # Rule 1.
+              for k in range(len(found) - 1):
+                  end = found[k][2]
+                  gap = lines[end : found[k + 1][0]]
+                  if gap and all(not g.strip() for g in gap):
+                      print(f'{path}:{end+1}: two doc blocks, both attached to the item below')
+                      bad = 1
+              # Rule 2.
+              for start, body, _ in found:
+                  width = max((len(b) for b in body), default=0)
+                  for i in range(len(body) - 1):
+                      here, nxt = body[i], body[i + 1]
+                      if structural(here) or structural(nxt):
+                          continue
+                      if not here.endswith('.') or len(here) > width - 15:
+                          continue
+                      if not (nxt[:1].isupper() or nxt[:1] in '`['):
+                          continue
+                      print(f'{path}:{start+i+2}: `{nxt[:40]}` opens a block inside another')
+                      bad = 1
+          sys.exit(bad)
+          PY
+      # A closure holding the window state does not call into Win32.
+      #
+      # `with_state` takes a `RefCell` borrow for the length of the closure. Any
+      # Win32 call inside it can dispatch a message to this same window, whose
+      # procedure then asks for the state again, fails to borrow it, and — until
+      # the seventh audit — silently dropped whatever that message was. The
+      # `Effect` design already forbids this: a handler decides and returns, and
+      # `apply` performs the effects after the borrow has ended. This is what
+      # keeps it forbidden, because the rule was previously stated only in prose
+      # and a single `InvalidateRect` moved two lines up would have broken it
+      # with nothing to say so.
+      #
+      # One call is exempt and it is not an exception list: `PaintDc::begin` is
+      # made inside the borrow on purpose (see `on_paint`), and the step below
+      # is what makes that admissible rather than assumed.
+      #
+      # Mutation-tested: a `ReleaseCapture` inserted into a single-expression
+      # closure and an `InvalidateRect` inserted into a multi-line one are both
+      # caught. The multi-line case is checked deliberately — three CI steps in
+      # the sixth audit were blind to exactly that shape.
+      - name: no Win32 inside a window-state borrow
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          CALL = re.compile(r'with_state(_access)?\s*\(')
+          # Win32 entry points, and this program's guards over them, that
+          # dispatch a message to the window or hand control back to Windows.
+          WIN32 = re.compile(
+              r'\b(SendMessage\w*|PostMessage\w*|DestroyWindow|SetWindowPos|MessageBox\w*|'
+              r'EnableWindow|EndPaint|InvalidateRect|SetCapture|ReleaseCapture|SetFocus|'
+              r'ShowWindow|UpdateWindow|SetTimer|KillTimer|TrackMouseEvent|DefWindowProcW|'
+              r'Shell_NotifyIconW|CreateWindowExW|SetWindowTextW|PaintDc::begin)\b')
+
+          def call_span(text, start):
+              """The source of the whole `with_state(..)` call expression."""
+              i = text.index('(', start)
+              depth, j = 0, i
+              while j < len(text):
+                  if text[j] == '(':
+                      depth += 1
+                  elif text[j] == ')':
+                      depth -= 1
+                      if depth == 0:
+                          return text[i:j + 1]
+                  j += 1
+              return text[i:]
+
+          bad = 0
+          for path in sorted(pathlib.Path('src').rglob('*.rs')):
+              text = path.read_text(encoding='utf-8')
+              for m in CALL.finditer(text):
+                  span = call_span(text, m.start())
+                  line = text[:m.start()].count('\n') + 1
+                  for hit in WIN32.finditer(span):
+                      if hit.group(1) == 'PaintDc::begin':
+                          continue
+                      print(f'{path}:{line}: the state closure calls `{hit.group(1)}`')
+                      bad = 1
+          sys.exit(bad)
+          PY
+
+      # What makes `PaintDc::begin` inside the borrow admissible.
+      #
+      # `BeginPaint` sends `WM_NCPAINT` and `WM_ERASEBKGND` to the window before
+      # it returns. Beginning the paint inside the state borrow is safe only
+      # while neither of those answers reaches the state: `WM_NCPAINT` is not
+      # handled at all, so it goes to `DefWindowProcW`, and `WM_ERASEBKGND` is
+      # answered with a constant. The exemption in the step above is therefore
+      # not a suppression — it is a claim, and this is the claim being checked.
+      - name: WM_ERASEBKGND does not reach the window state
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          text = pathlib.Path('src/ui/window/proc.rs').read_text(encoding='utf-8')
+          arm = re.search(r'^\s*WM_ERASEBKGND\s*=>\s*(.+)$', text, re.M)
+          if not arm:
+              print('no WM_ERASEBKGND arm: PaintDc::begin inside the borrow is unjustified')
+              sys.exit(1)
+          if 'with_state' in arm.group(1) or 'handle(' in arm.group(1):
+              print(f'WM_ERASEBKGND reaches the window state: {arm.group(1).strip()}')
+              sys.exit(1)
+          if re.search(r'^\s*WM_NCPAINT\s*=>', text, re.M):
+              print('WM_NCPAINT is handled here; check it cannot reach the state')
+              sys.exit(1)
+          print('WM_ERASEBKGND is answered without the state')
+          PY
+
+      # Every fallible function says what it fails with.
+      #
+      # `grep '# Errors'` over `src/` used to come back empty across twenty-six
+      # functions returning `Result`. The information was not missing — the
+      # errors are typed, the variants carry their reasons, and most of the
+      # functions explained their failures in prose — but none of it was under
+      # the heading a reader looks beneath, which for `Result` in Rust is this
+      # one.
+      #
+      # `clippy::missing_errors_doc` is the lint for this and it has nothing to
+      # inspect here: it fires on public items, and every item in this crate is
+      # `pub(crate)` at most (see Cargo.toml's note on `missing_docs`). That is
+      # measured, not assumed — the sixth audit ran it and got zero from `src/`.
+      #
+      # So the check is external, and deliberately shallow: it asks only that
+      # the section exists, not what it says. Prose cannot be checked by a
+      # script, and a check that pretended to would be worse than none. What
+      # this catches is the case that actually recurs — a new fallible function
+      # arriving with no section at all, or an existing one losing its heading
+      # to a reformat. Test modules are skipped: a test helper returning
+      # `Result` documents nothing for anyone outside the file.
+      - name: fallible functions document their errors
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          signature = re.compile(r'^(\s*)(?:pub(?:\(\w+\))? )?(?:unsafe )?fn (\w+)')
+          bad = 0
+          for path in sorted(pathlib.Path('src').rglob('*.rs')):
+              lines = path.read_text(encoding='utf-8').splitlines()
+              in_tests, test_indent = False, 0
+              for n, line in enumerate(lines):
+                  stripped = line.strip()
+                  if re.match(r'^\s*mod \w*tests\w* \{$', line):
+                      in_tests, test_indent = True, len(line) - len(line.lstrip())
+                      continue
+                  if in_tests and stripped == '}' and len(line) - len(line.lstrip()) == test_indent:
+                      in_tests = False
+                      continue
+                  if in_tests:
+                      continue
+                  m = signature.match(line)
+                  if not m:
+                      continue
+                  # The return type may sit several lines below `fn`, so the
+                  # signature is read to its opening brace or its semicolon
+                  # rather than to the end of the line the name is on. The
+                  # first version of this step stopped at the line and so was
+                  # blind to `write_value`, `write_flag` and `spawn_reader` —
+                  # a gate that did not catch the thing it guards.
+                  head, k = [], n
+                  while k < len(lines) and k < n + 40:
+                      head.append(lines[k])
+                      if lines[k].rstrip().endswith(('{', ';')):
+                          break
+                      k += 1
+                  if '-> Result<' not in ' '.join(head):
+                      continue
+                  doc, k = [], n - 1
+                  while k >= 0 and (
+                      lines[k].lstrip().startswith('///') or lines[k].lstrip().startswith('#[')
+                  ):
+                      doc.append(lines[k])
+                      k -= 1
+                  if not any('# Errors' in d for d in doc):
+                      print(
+                          f'{path}:{n+1}: `{m.group(2)}` returns Result '
+                          'with no `# Errors` section'
+                      )
+                      bad = 1
+          sys.exit(bad)
+          PY
+      # Where a file stops being production code.
+      #
+      # A reader scrolling a file reaches `mod tests` and stops: that is what
+      # the marker means, and it is why three live functions — `on_char`,
+      # `on_key_down`, `on_syskey_down` — went unread below it in `proc.rs`,
+      # with `Modifiers` beside them. `paint.rs` had the same drift and was
+      # fixed a session earlier, so this is a class that has now recurred, which
+      # is the bar for a check rather than another reading.
+      #
+      # `clippy::items_after_test_module` is exactly this lint and it does not
+      # reach here. Measured rather than assumed: a used item was appended below
+      # `mod tests` in `proc.rs` and clippy said nothing, because the lint
+      # inspects the crate root and these are submodules. Nothing else in the
+      # matrix can see it either — the code compiles, the tests pass, and the
+      # order of items in a file is invisible to every one of them.
+      #
+      # The rule is the tree's own convention, stated: a module named exactly
+      # `tests` is the file's own suite and is its last item. That holds in
+      # every one of the files that has one, with no exceptions to list.
+      # Modules with a specific name — `timer_registry_tests` beside the timer
+      # ids, `scroll_only_tests` beside the routing it covers — are checks
+      # placed next to their subject rather than a file's closing suite, and the
+      # name is the author saying so. Those keep their neighbours below them.
+      - name: the file's own test suite comes last
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          bad = 0
+          for path in sorted(pathlib.Path('src').rglob('*.rs')):
+              lines = path.read_text(encoding='utf-8').splitlines()
+              for n, line in enumerate(lines):
+                  if line != 'mod tests {':
+                      continue
+                  # The closing brace of a top-level module is the next line
+                  # that is a lone `}` in column zero.
+                  end = n + 1
+                  while end < len(lines) and lines[end] != '}':
+                      end += 1
+                  after = [
+                      (i, l) for i, l in enumerate(lines[end + 1:], end + 2) if l.strip()
+                  ]
+                  if after:
+                      i, l = after[0]
+                      print(f'{path}:{i}: {l.strip()!r} is below the file\'s test suite')
+                      bad = 1
+          sys.exit(bad)
+          PY
+      # One clippy run, one artifact, one reader.
+      #
+      # Two steps used to count out of `/tmp/pedantic.json`, and only one of
+      # them created it — 266 lines further down the same job. On a clean
+      # runner the earlier reader found no file at all, so the indexing ratchet
+      # the seventh cycle introduced had never once been checked; it was held
+      # by reading, while what was written down said a CI step compared it.
+      #
+      # Swapping the two steps would have fixed that and left the class
+      # standing: a measurement handed between steps through `/tmp`, with the
+      # order of the YAML as the dependency and nothing to verify it. So there
+      # is one measurement, made here, with exactly one consumer.
+      #
+      # This step deliberately counts nothing. Counting lives in the reader
+      # below, because two steps counting one artifact is the same duplication
+      # one level down — and it is the shape that produced the defect above.
+      #
+      # `|| true` because clippy exits non-zero on the crate's own `deny` lints
+      # and this is a census rather than a gate; the gate is the `clippy` step
+      # in the `windows` job. The GNU target is used because this job already
+      # has it, and it is measured to give the same answer as MSVC, so the
+      # choice of target is not load-bearing.
+      # Counted with the MSRV toolchain, not with `stable`. Each clippy release
+      # can add lints or widen old ones, so a census on a floating toolchain
+      # moves on a day nothing here changed — measured: 133 on 1.82, 305 on
+      # 1.98.1, over the same tree. A count that follows Rust releases rather
+      # than this code is not a ratchet. 1.82 is the one toolchain this project
+      # already declares fixed, in `rust-version`; what newer ones add is still
+      # printed by the `pedantic census` step of the `windows` job.
+      - name: clippy census
+        run: |
+          cargo +1.82 clippy --target x86_64-pc-windows-gnu --all-targets \
+            --message-format=json > /tmp/clippy.json || true
+      # Both figures the census produced, against the two rows that state them.
+      #
+      # `pedantic` is the count that moves with every commit that fixes one.
+      # It was left to prose once and drifted exactly as the metrics block's
+      # own text warns: the recorded chain of transitions ended at 153 while
+      # the tree stood at 149, and Cargo.toml said 153 as well. Nothing was
+      # wrong with the code; the figure had been corrected in one place and not
+      # the others, which is the failure mode a scattered figure has.
+      #
+      # `indexing_slicing` is the panic surface, counted rather than listed.
+      # The lint is warned in `Cargo.toml`, which explains why it and not
+      # `arithmetic_side_effects`. This is a ratchet: a new `a[i]` has to be
+      # paid for by closing another or by using `get`.
+      #
+      # Both are counted the way they were defined when first published: not
+      # log lines, which repeat a finding once per target and once per
+      # `--all-targets` pass, but unique tuples of file, line and column —
+      # with the lint name as well for `pedantic`, which spans many lints.
+      #
+      # A missing artifact is a refused check and has to look like one, so it
+      # is reported as a sentence rather than as a Python traceback. The
+      # `build-finished` record is what distinguishes "clippy ran and found
+      # nothing" from "the census never ran".
+      - name: README clippy counters
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys
+
+          census = pathlib.Path('/tmp/clippy.json')
+          if not census.exists():
+              sys.exit('no /tmp/clippy.json: the `clippy census` step did not run')
+
+          finished = False
+          pedantic, indexing = set(), set()
+          for line in census.read_text().splitlines():
+              line = line.strip()
+              if not line.startswith('{'):
+                  continue
+              try:
+                  record = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if record.get('reason') == 'build-finished':
+                  finished = True
+                  continue
+              if record.get('reason') != 'compiler-message':
+                  continue
+              message = record['message']
+              code = (message.get('code') or {}).get('code') or ''
+              if not code.startswith('clippy::'):
+                  continue
+              for span in message.get('spans', []):
+                  if not span.get('is_primary'):
+                      continue
+                  where = (span['file_name'], span['line_start'], span['column_start'])
+                  if code == 'clippy::indexing_slicing':
+                      indexing.add(where)
+                  else:
+                      pedantic.add((code, *where))
+
+          if not finished:
+              sys.exit('/tmp/clippy.json holds no completed build: the census is not a census')
+
+          readme = pathlib.Path('README.md').read_text(encoding='utf-8')
+          rows = {
+              'Pedantic warnings': len(pedantic),
+              'Indexing sites': len(indexing),
+          }
+          bad = 0
+          for label, actual in rows.items():
+              row = re.search(rf'^\|\s*{re.escape(label)}\s*\|\s*(\d+)\s*\|', readme, re.M)
+              if not row:
+                  print(f'README: the "{label}" row of Metrics is gone')
+                  bad = 1
+                  continue
+              claimed = int(row.group(1))
+              if claimed != actual:
+                  print(f'README says {claimed} for "{label}"; the tree has {actual}')
+                  bad = 1
+                  continue
+              print(f'{actual} for "{label}", as README states')
+          sys.exit(bad)
+          PY
+      # Blocks of `unsafe`, against the row that states how many there are.
+      #
+      # The figure had been living in a comment in `Cargo.toml`, where it said
+      # 200 while the tree held 199 — it aged the moment the seventh cycle
+      # removed four blocks, silently, because nothing compared it to anything.
+      # That comment now states the property (every block is justified, the
+      # tree is at zero) and the count lives here, where the count belongs.
+      #
+      # Comment lines are skipped for the same reason every other step in this
+      # job skips them: `unsafe impl Send` is named in two doc comments that
+      # explain it, and a counter that read those would be counting prose.
+      - name: README unsafe block count
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          BLOCK = re.compile(r'\bunsafe\s*\{')
+          IMPL = re.compile(r'^\s*unsafe\s+impl\b')
+
+          blocks = impls = 0
+          sources = sorted(pathlib.Path('src').rglob('*.rs')) + [pathlib.Path('build.rs')]
+          for path in sources:
+              for line in path.read_text(encoding='utf-8').splitlines():
+                  if line.lstrip().startswith('//'):
+                      continue
+                  blocks += len(BLOCK.findall(line))
+                  impls += 1 if IMPL.match(line) else 0
+
+          readme = pathlib.Path('README.md').read_text(encoding='utf-8')
+          row = re.search(r'^\|\s*Unsafe blocks\s*\|\s*(\d+)\s*\+\s*(\d+)\s*\|', readme, re.M)
+          if not row:
+              sys.exit('README: the "Unsafe blocks" row of Metrics is gone')
+          if (int(row.group(1)), int(row.group(2))) != (blocks, impls):
+              sys.exit(
+                  f'README says {row.group(1)} + {row.group(2)} unsafe items; '
+                  f'the tree has {blocks} + {impls}'
+              )
+          print(f'{blocks} unsafe blocks and {impls} unsafe impls, as README states')
+          PY
+      # A figure the block cannot invalidate on its own, checked against the tree.
+      #
+      # The metrics block exists so that measurements age together instead of
+      # one at a time, and its own text says why: a figure scattered across
+      # three sections gets corrected in one of them and becomes the document
+      # contradicting itself. That is precisely what happened to this figure —
+      # it said 414 while another section said 421 and the tree held 421. The
+      # rest of the block cannot drift without somebody noticing (exe size is
+      # approximate by design, package count changes only with Cargo.toml,
+      # MSRV is declared there), but the test count moves with every commit
+      # that adds a test. So it is the one worth a check rather than a promise.
+      - name: README test count
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          actual = sum(
+              len(re.findall(r'^\s*#\[test\]', p.read_text(encoding='utf-8'), re.M))
+              for p in pathlib.Path('src').rglob('*.rs')
+          )
+          readme = pathlib.Path('README.md').read_text(encoding='utf-8')
+          row = re.search(r'^\|\s*Test functions\s*\|\s*(\d+)\s*\|', readme, re.M)
+          if not row:
+              sys.exit('README: the "Test functions" row of Metrics is gone')
+          claimed = int(row.group(1))
+          if claimed != actual:
+              sys.exit(f'README says {claimed} test functions; the tree has {actual}')
+          print(f'{actual} test functions, as README states')
+          PY
+      - name: doc
+        run: cargo doc --no-deps --document-private-items --target x86_64-pc-windows-gnu
+      # The release profile, because `opt-level = "z"`, LTO and `panic = "abort"`
+      # are not exercised by any of the debug builds above, and because the
+      # resource-linking half of build.rs only runs for a Windows target.
+      - name: release cross-build
+        run: cargo build --release --target x86_64-pc-windows-gnu
+      # What the dependency tree is allowed to contain, asked of the tree.
+      #
+      # This runs last on purpose. `deny` fails on things that have nothing to
+      # do with whether the code compiles — a licence, an advisory published
+      # yesterday, a second copy of a crate — and a job that stops there before
+      # it has linked the binary reports the wrong problem first.
+      #
+      # It replaces `cargo audit`, which read the same RUSTSEC database that
+      # `deny check advisories` reads. Two tools over one database is two
+      # places a policy about one vulnerability can be written, and they can
+      # disagree; that is the hand-maintained parallel list this project treats
+      # as a defect class rather than as thoroughness.
+      #
+      # The version is pinned for the same reason `windows` is: a floating
+      # "latest" makes somebody else's release able to break this matrix on a
+      # day nothing here changed. What that costs — the pin ages unless
+      # something asks — is the whole argument for keeping the check.
+      - name: cargo deny
+        run: |
+          cargo install cargo-deny --locked --version 0.20.2
+          cargo deny check
