@@ -1,0 +1,24 @@
+# Reproducible linking for the shipped target.
+#
+# `link.exe` stamps the wall-clock time of the link into four places: the COFF
+# header's `TimeDateStamp` and the `TimeDateStamp` of each record in the debug
+# directory. Two clean rebuilds of identical sources therefore differ in 24
+# bytes and hash differently, while `.text` and `.rdata` are byte for byte the
+# same. That was measured on this project before this line was added: the only
+# differing ranges were those fields and the debug payload derived from them.
+#
+# `/Brepro` makes the linker write a hash of the content into those fields
+# instead of a time. With it, two clean rebuilds in different directories
+# produce one identical file, which is what lets anybody who follows the build
+# instructions check the published binary against its published hash.
+#
+# Microsoft does not document the flag. It is relied on here because its effect
+# was measured on this toolset rather than read about; on a different linker
+# version it should be re-measured the same way — two clean rebuilds, compared
+# byte for byte. The known cost is that tools which read the field as a date
+# see a number that is not one.
+#
+# Scoped to the MSVC target on purpose: the GNU cross-build used for checking
+# links with a different linker, which does not take this flag.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/Brepro"]
