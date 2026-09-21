@@ -10,7 +10,9 @@ model and on no other. See [Hardware](#hardware).
 
 ## What it does
 
-<img src="docs/panel.png" alt="The status panel, dark theme" width="310" align="left">
+<p align="center">
+<img src="docs/panel.png" alt="The status panel, dark theme" width="280">
+</p>
 
 - **Tray icon in four states**, first match wins: no contact with the device;
   critical — internal failure, overload, charge below the device's capacity
@@ -34,8 +36,6 @@ model and on no other. See [Hardware](#hardware).
   week writes no lines at all.
 - **24 interface languages**, compiled into the binary.
 - **Two themes**, dark and light, switchable without a restart.
-
-<br clear="left">
 
 ## What it deliberately does not do
 
