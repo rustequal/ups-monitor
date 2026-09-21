@@ -34,11 +34,12 @@ on:
 permissions:
   contents: read
 
+# The runner image and the action are pinned for the reasons given in `ci.yml`.
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The manifest is the source of truth and the tag is checked against it,
       # not the other way round: `build.rs` reads the manifest, so that is what
       # ends up inside the executable.

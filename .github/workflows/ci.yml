@@ -20,11 +20,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Runner images and actions are pinned, for the reason the `cargo deny` version
+# is: a floating `-latest` label or a movable tag lets somebody else's release
+# change this matrix on a day nothing here changed. Images are named by OS
+# version and moved by a commit when GitHub retires one, after announcing it.
+# Each action is pinned to the full commit SHA its release tag named, which,
+# unlike the tag, cannot be repointed; `.github/dependabot.yml` proposes the
+# updates, and the trailing comment names the release the SHA belongs to.
 jobs:
   # The real target, on the real operating system: MSVC, and tests that run as
   # Windows processes rather than under an emulation layer.
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
@@ -32,7 +39,7 @@ jobs:
         # see a new lint arriving before it arrives in a release.
         rust: [1.82, stable, beta, nightly]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install toolchain
         run: |
           rustup toolchain install ${{ matrix.rust }} --profile minimal --component clippy
@@ -100,9 +107,9 @@ jobs:
   # text rather than from a run, which is the same mistake as a metric nobody
   # measured; it is recorded here rather than quietly deleted.
   coverage:
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install toolchain
         run: |
           rustup toolchain install stable --profile minimal --component llvm-tools-preview
@@ -117,9 +124,9 @@ jobs:
   # cross-compiled from Linux. This is also where the checks that do not depend
   # on a Windows host live, so they are not repeated four times above.
   cross:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt
