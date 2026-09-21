@@ -1,0 +1,19 @@
+# Words that look like identifiers to `clippy::doc_markdown` and are not.
+#
+# The lint flags any word with inner capitals on the assumption that it names an
+# item and belongs in backticks. That assumption is right for `HidD_GetFeature`
+# and `PowerSummary`, and wrong for the four below: they are the names of a
+# manufacturer, its software, a capture tool and a typeface. Putting a product
+# name in backticks tells the reader it is something they could go and look up
+# in this crate, which is precisely what it is not — the same class of false
+# claim the sixth audit spent its first stage removing.
+#
+# This is the mechanism clippy provides for the purpose, not a suppression:
+# nothing is silenced, the lint is simply told the truth about the vocabulary.
+# `".."` keeps clippy's own default list rather than replacing it.
+#
+#   CyberPower — the manufacturer (the UPS is a CP1350EPFCLCD)
+#   PowerPanel — the vendor's own Windows software, referenced for its protocol
+#   USBPcap    — the capture tool the vendor protocol was read from
+#   YaHei      — part of the font name "Microsoft YaHei UI"
+doc-valid-idents = ["CyberPower", "PowerPanel", "USBPcap", "YaHei", ".."]

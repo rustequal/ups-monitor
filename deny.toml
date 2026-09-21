@@ -1,0 +1,88 @@
+# What this project's dependency tree is allowed to contain.
+#
+# Read by `cargo deny check`, which runs as the last step of the `cross` job.
+# It replaces `cargo audit`: both read the same RUSTSEC database, and two tools
+# over one database is two places a decision about one vulnerability can be
+# written down — and therefore two that can disagree. This file is the one.
+#
+# The tree is small on purpose: two direct dependencies, `windows` and
+# `thiserror`, resolved once and frozen in `Cargo.lock`, plus what they bring.
+# The point of a policy file over a tree this size is not to keep a large
+# surface under control; it is that every allowance below had to be written by
+# somebody, so an allowance nobody would write again is visible.
+
+[graph]
+# The two targets the binary is actually built for. Without this, `deny`
+# resolves the tree for the host as well and reports crates that no build of
+# this project ever compiles.
+targets = [
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "x86_64-pc-windows-gnu" },
+]
+all-features = true
+
+[advisories]
+# No `ignore` list, and the absence is the point. An advisory muted here would
+# be a decision made once and then reread by nobody; if one ever has to be
+# accepted, it belongs here with the reason and the date it was accepted, in
+# the form the entries in `[bans]` below use.
+ignore = []
+# Unmaintained crates are a warning rather than an error. "No release in two
+# years" is a fact about a repository, not about this tree — `windows-link` is
+# a hundred lines that do one thing — and a build that fails on somebody
+# else's release cadence teaches people to pass `--allow`.
+unmaintained = "workspace"
+yanked = "deny"
+
+[licenses]
+# Every licence in the tree today, named rather than matched by pattern, and
+# nothing beyond them.
+#
+# `Unicode-3.0` is the one that needs saying: `unicode-ident` carries it, and
+# it reads as unfamiliar next to a wall of MIT and Apache-2.0. It is the
+# Unicode licence attached to the Unicode character database, it is
+# OSI-approved, and it is permissive — attribution, no copyleft, no field
+# restriction. It is on the list because it was read, not because it appeared.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+# An allowance for a licence no crate in the tree carries is an error, not a
+# warning. A list padded with plausible extras — BSD-3-Clause, ISC, Zlib, the
+# ones every example file starts with — would silently pre-approve whatever
+# arrives next, which is the opposite of what naming each licence is for. The
+# list is meant to be short enough that adding to it is a decision.
+unused-allowed-license = "deny"
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+# `deny` rather than `warn` because the value of this check is at the moment a
+# second copy of something appears, which is the moment somebody can still
+# choose not to add it.
+
+# `syn` is in the tree twice and cannot be brought down to one.
+#
+# Measured, not assumed: `windows-implement` 0.60.2 and `windows-interface`
+# 0.59.3 declare `syn ^2.0` — every published version of both does, back to
+# 0.57 — while `thiserror-impl` moved to `syn ^3` in 2.0.19. Both sides are
+# already at their latest release, so no update closes this; the only lever is
+# pinning `thiserror` back to `=2.0.18`, which trades a duplicate build
+# dependency for a version that stops receiving fixes. That is the worse of
+# the two.
+#
+# Both are proc-macro dependencies. They are compiled by the build and appear
+# in neither the binary nor its attribution, so the cost is build time and
+# nothing else.
+#
+# Review when either side moves: this entry is expected to be deleted, not
+# renewed. Written 2026-08; revisit at the next dependency bump.
+[[bans.skip]]
+crate = "syn:2"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

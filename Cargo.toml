@@ -1,0 +1,185 @@
+[package]
+name = "ups-monitor"
+version = "1.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "CyberPower CP1350EPFCLCD tray monitor"
+license = "MIT"
+repository = "https://github.com/rustequal/ups-monitor"
+readme = "README.md"
+
+# The zero-warning rule, stated where the build can enforce it.
+#
+# It was a procedure before: a list of `RUSTFLAGS` invocations somebody had to
+# remember to run. A rule that lives in a document is checked by whoever read
+# the document; a rule that lives here is checked by every build, including the
+# one a contributor runs before reading anything. `[lints]` is stable since
+# 1.74, below this crate's MSRV of 1.82.
+#
+# `deny`, not `warn`: `unused` has been at zero for the life of the project and
+# names things that should not exist rather than things that could be improved.
+# Dead code is deleted here, not annotated, so "this never fires" is the
+# intended steady state, and a failure to build is the right way to learn it
+# stopped being true.
+#
+# One entry, not two. `dead_code` is a member of the `unused` group — the CI
+# step that forces both spells out `-W dead_code -W unused`, but the second
+# already implies the first, and writing both here would be the same rule in two
+# places, able to disagree the moment one of them is edited.
+#
+# `missing_docs` and `unreachable_pub` are both enabled, and both had to wait
+# for the split into `lib.rs` + `main.rs`.
+#
+# While this was a `[[bin]]` neither could say anything: nothing is exported
+# from a binary, so `missing_docs` had no items to look at and `unreachable_pub`
+# would have flagged every `pub` in the tree at once, which is a report, not a
+# rule. The split gave the module tree a crate root that is not also an entry
+# point, and then both mean something.
+#
+# `unreachable_pub` found 403 items declared `pub` that nothing outside could
+# reach — the whole tree, which is what a binary's `pub` amounts to — and each
+# is now `pub(crate)`, which is what they always were.
+#
+# Getting there needed one real change, not a narrowing. `src/color.rs` and
+# `src/icon.rs` are compiled twice: once here and once into the build script,
+# through `#[path]`. The build script draws the exe mark, so it reaches the
+# rendering half of each and nothing else; narrowed, five live items looked
+# unused to it, and `dead_code` — denied here, and rightly — said so on every
+# build. Two crates held opposite notions of reachability about one source.
+#
+# The answer was to move what was never shared: `IconState` and
+# `IconSet::spec` to `ui/tray.rs`, beside `state_for`; `Color::to_colorref` to
+# `ui/gdi.rs`, where Win32 lives; `Color::shifted` and `Color::over` to
+# `ui/theme.rs`, which is what a hover shift and an alpha resolution belong to.
+# Each move stands on its own reading, and the shared modules now carry only
+# what is actually shared.
+#
+# `missing_docs` fires on nothing today: the public surface is `run`, and it is
+# documented. That is why it is worth turning on now rather than later — the
+# surface is one function, so the rule starts from zero and stays there.
+[lints.rust]
+unused = { level = "deny", priority = -1 }
+missing_docs = "deny"
+unreachable_pub = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+# Every `unsafe` block states why it is sound, and the compiler is what says so.
+#
+# This can be `deny` because the tree is at zero: every block carries its own
+# `SAFETY:` line, and so does the single `unsafe impl Send`. There were two of
+# those; the seventh audit removed the one on `RawDevice`, which justified a
+# thread crossing the value never makes.
+#
+# How many blocks there are is deliberately not written here. This comment said
+# "200" and had been wrong since the seventh audit closed four of them, because
+# a figure in a file nothing compares to anything ages in silence — the same
+# argument the note on `pedantic` below makes about itself. What a comment can
+# state without ageing is the property: the tree is at zero, and every block is
+# justified. The count itself lives in exactly one place, where a CI step
+# measures it against the tree on every push.
+#
+# It is worth denying rather than warning for the same reason as `unused` — the
+# value is in the moment a *new* block appears without a justification, which is
+# exactly when the author is best placed to write one and least likely to on
+# their own.
+#
+# The number is as low as it is because most of what used to need a
+# justification stopped being `unsafe` at all: a `Canvas` proves the device
+# context is live, so the drawing routines are ordinary safe functions. That is
+# the order the two belong in — encapsulate first, justify what is left.
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+# `pedantic` at `warn`, with no exceptions listed and none intended.
+#
+# The earlier decision here was the opposite: leave it off, on the grounds that
+# it could not reach zero and that a build printing hundreds of expected
+# warnings teaches the reader to stop looking. The first half was true and the
+# second half was an argument for the wrong conclusion. What it actually argued
+# for was turning the lint on at `deny` and adding an `allow` for each group
+# that would not go quietly — and that is not fixing anything, it is arranging
+# for the finding to stop being printed. A suppressed warning and an absent
+# warning look identical in a green build and mean opposite things.
+#
+# So the lint reports, the count is public, and it goes down only when code is
+# fixed. The sixth audit has taken it down by more than half that way, with no
+# `allow` anywhere: casts became `From` conversions where the conversion is
+# real, raw-pointer casts became `cast`, an `Option` that was never `None` lost
+# its wrapper, and a `u32` detour that existed only to hold a `u16` range went
+# back to `u16`. What remains is remains — mostly `as` at the Win32 and GDI ABI,
+# where the cast is the calling convention rather than a choice. Those are
+# argued with one at a time, in the open, and until one is argued through it
+# stays on the screen.
+#
+# The count itself is deliberately not written here. It moves with every commit
+# that fixes one, and a figure in a file nothing checks is a figure that goes
+# stale silently — this comment said 153 while the tree stood at 149, and so
+# did every other place the figure had been written down. It now lives in
+# exactly one place, where a CI step compares it against the tree on every push.
+#
+# Declaring it here rather than passing `-W clippy::pedantic` by hand is also
+# what makes the number reproducible: the manifest reaches every target the
+# same way, so `cargo clippy` and the CI census cannot disagree about what the
+# count is.
+#
+# The gate in CI denies everything *except* `pedantic`, so the zero-warning
+# rule still holds for every lint that can honestly reach zero, and this one is
+# printed rather than enforced.
+pedantic = { level = "warn", priority = -1 }
+
+# `indexing_slicing` at `warn`, counted the same way and for a sharper reason.
+#
+# The release profile is `panic = "abort"`, and the window procedure is
+# `extern "system"`. An index out of range there is not an error the program
+# reports — it is the end of the process, in a utility whose job is to keep
+# running when the power fails. That makes every `a[i]` and `s[a..b]` a place
+# where a wrong number becomes a dead monitor.
+#
+# Measured before it was enabled: 169 sites by this counter's own method
+# (`--all-targets`, as for `pedantic`), 128 of them outside tests and 61 in the
+# icon renderer and its encoder, where the index walks a buffer the same
+# function allocated. The four on the path a window procedure can reach at
+# runtime were closed first, so the number this starts from is the honest one
+# rather than the one that happened to be there.
+#
+# `arithmetic_side_effects` was measured at the same time — 625 sites — and is
+# deliberately **not** enabled. In a release build, where `overflow-checks` is
+# off, arithmetic does not panic: it wraps. It belongs to the
+# silent-wrong-value class, not this one, and a counter that mixed them would
+# say nothing about either. Where a wrapped value *does* reach a panic, it is
+# the panic that is closed rather than the arithmetic.
+#
+# `warn`, not `deny`, for the same reason as `pedantic`: the gate in CI denies
+# everything except these two, and a separate step prints the count, which is
+# recorded and may only go down.
+indexing_slicing = "warn"
+
+[dependencies]
+thiserror = "2.0"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Input_KeyboardAndMouse",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

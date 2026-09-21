@@ -1,0 +1,6 @@
+# Build output.
+/target
+
+# Written by the utility beside its own executable at run time.
+*.ini
+*.log
