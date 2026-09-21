@@ -1,0 +1,19 @@
+# Proposes updates to the actions the workflows pin by commit SHA. Each update
+# arrives as a pull request that moves the SHA and its trailing version comment
+# together, and CI runs on it before anything is merged.
+#
+# Only `github-actions`. Rust dependencies are deliberately not here: the
+# exact `Cargo.lock` is part of the published binary's build recipe, so a
+# dependency change is a release decision rather than routine upkeep, and
+# `cargo deny` already checks the locked tree against the RustSec advisory
+# database on every push.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # A new release is proposed only after it has been public for a week, which
+    # leaves time for a compromised or broken release to be noticed first.
+    cooldown:
+      default-days: 7
