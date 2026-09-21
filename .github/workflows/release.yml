@@ -1,0 +1,64 @@
+# What a published release asserts.
+#
+# This workflow does not build the artefact. The published binary is the one
+# built locally for `x86_64-pc-windows-msvc` under a Developer Command Prompt,
+# because that is the only configuration whose bytes are reproducible by a
+# reader following the build instructions, and a hosted runner cannot produce
+# it. Whoever built it attaches it to the release by hand, together with its
+# SHA-256, and writes the notes; the decision to publish is theirs as well.
+#
+# Nor does it run the tests, or cross-build: `ci.yml` does both, on four
+# toolchains and two targets, on every push. Repeating either here would be a
+# second verification matrix to keep in step with the first.
+#
+# What is left is the one thing neither of those covers, and it is the thing a
+# release can get wrong: that the version its tag names is the version the
+# manifest declares. `build.rs` writes the version resource from
+# `CARGO_PKG_VERSION`, so a tag cut before the manifest was bumped would publish
+# `v1.2.0` holding a binary that calls itself 1.1.0 — visible only in the
+# file's properties dialog, which is exactly where nobody looks.
+
+name: Release
+
+on:
+  # Fired when a release is published, whether its tag was pushed or created in
+  # the release form. Drafts do not fire it, so the check runs at the moment the
+  # release becomes public, against the tag it was published under.
+  release:
+    types: [published]
+  # Runnable by hand so the workflow can be exercised without inventing a
+  # release for it. Without this, the first time it runs in anger is also the
+  # first time it runs.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The manifest is the source of truth and the tag is checked against it,
+      # not the other way round: `build.rs` reads the manifest, so that is what
+      # ends up inside the executable.
+      - name: the tag names the version in the manifest
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, sys
+
+          ref = os.environ.get('GITHUB_REF_NAME', '')
+          manifest = pathlib.Path('Cargo.toml').read_text(encoding='utf-8')
+          version = re.search(r'^version = "([^"]+)"', manifest, re.M)
+          if not version:
+              sys.exit('Cargo.toml states no version')
+          version = version.group(1)
+
+          if not ref.startswith('v'):
+              # A manual run, which has no tag to disagree with.
+              print(f'manifest declares {version}; no tag to check')
+              sys.exit(0)
+          if ref[1:] != version:
+              sys.exit(f'tag {ref} does not name Cargo.toml version {version}')
+          print(f'tag {ref} and Cargo.toml agree on {version}')
+          PY
